@@ -1,5 +1,16 @@
 # Port Scanner and Payload Sender
 
+```
+           _      _      _____   ____  _____ _______ ______ _____  
+     /\   | |    | |    |  __ \ / __ \|  __ \__   __|  ____|  __ \ 
+    /  \  | |    | |    | |__) | |  | | |__) | | |  | |__  | |__) |
+   / /\ \ | |    | |    |  ___/| |  | |  _  /  | |  |  __| |  _  / 
+  / ____ \| |____| |____| |    | |__| | | \ \  | |  | |____| | \ \ 
+ /_/    \_\______|______|_|     \____/|_|  \_\ |_|  |______|_|  \_\
+                                                                   
+                                                Krystian Bajno 2025
+```
+
 This Python script is designed to scan for open ports on a target host, allow users to interact with the open ports, and send payloads to those ports. It uses multi-threading to scan ports quickly and enables manual connection and communication through each open port. The script maintains connections to open ports, meaning that once a port is found open, the connection stays open for further interaction until explicitly closed.
 
 ## Features
