@@ -20,4 +20,4 @@ This Python script is designed to scan for open ports on a target host, allow us
 ## Usage
 
 ```bash
-python port_scanner.py <target_host> [ports]
+python allporter.py <target_host> [ports]
