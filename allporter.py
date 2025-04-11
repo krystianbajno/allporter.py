@@ -3,17 +3,16 @@ import threading
 import sys
 import os
 import concurrent.futures
-import yaml
 
 open_ports = []
 connections = {}
 lock = threading.Lock()
 
-def load_blocklisted_ports(yaml_path="blocklist.yaml"):
+def load_blocklisted_ports(txt_path="blocklist.txt"):
     try:
-        with open(yaml_path, 'r') as f:
-            data = yaml.safe_load(f)
-            return set(data.get("blocklisted_ports", []))
+        with open(txt_path, 'r') as f:
+            blocklisted_ports = {int(line.strip()) for line in f.readlines() if line.strip().isdigit()}
+            return blocklisted_ports
     except Exception as e:
         print(f"[!] Failed to load blocklist: {e}")
         return set()
@@ -70,7 +69,6 @@ def get_or_create_connection(host, port):
                 pass
             del connections[port]
 
-    # Establish new connection if not found or if the previous one failed
     try:
         sock = socket.create_connection((host, port), timeout=5)
         connections[port] = sock
@@ -151,7 +149,7 @@ def main():
                 port = int(port_str)
 
                 if port in BLOCKLISTED_PORTS:
-                    print(f"[-] Port {port} is blacklisted.")
+                    print(f"[-] Port {port} is blocklisted.")
                     continue
 
                 if port not in open_ports:
