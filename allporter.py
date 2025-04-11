@@ -3,6 +3,8 @@ import threading
 import sys
 import os
 import concurrent.futures
+import ipaddress
+import argparse  # Import argparse module for better argument parsing
 
 open_ports = []
 connections = {}
@@ -19,25 +21,6 @@ def load_blocklisted_ports(txt_path="blocklist.txt"):
 
 BLOCKLISTED_PORTS = load_blocklisted_ports()
 
-def scan_port(host, port):
-    if port in BLOCKLISTED_PORTS:
-        return
-    try:
-        sock = socket.create_connection((host, port), timeout=1)
-        with lock:
-            open_ports.append(port)
-            connections[port] = sock
-            print(f"[+] Open port: {port}")
-    except:
-        pass
-
-def scan_all_ports(host):
-    print("[*] Scanning ports...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1024) as executor:
-        futures = [executor.submit(scan_port, host, port) for port in range(1, 65536)]
-        concurrent.futures.wait(futures)
-    print(f"[+] Scanning completed. Open ports: {open_ports}")
-
 def load_payload(file_path):
     if not os.path.exists(file_path):
         print(f"[-] File {file_path} not found.")
@@ -51,11 +34,43 @@ def send_payload(sock, file_path):
         return
     try:
         sock.sendall(payload)
-        print(f"[+] Payload sent from {file_path}")
+        print(f"[+] Payload sent from {file_path} to {sock.getpeername()}")
+        
+        # Wait for a response after sending the payload
+        response = sock.recv(4096)
+        if response:
+            print(f"[+] Response from {sock.getpeername()}: {response.decode(errors='ignore')}")
+        else:
+            pass
     except Exception as e:
         print(f"[-] Error sending payload: {e}")
 
-def get_or_create_connection(host, port):
+def scan_port(host, port, payload_file=None):
+    if port in BLOCKLISTED_PORTS:
+        return
+    try:
+        sock = socket.create_connection((host, port), timeout=1)
+        with lock:
+            open_ports.append(port)
+            connections[port] = sock
+            print(f"[+] Open port: {port}")
+
+            # Send payload immediately after successful connection
+            if payload_file:
+                send_payload(sock, payload_file)
+                
+    except Exception as e:
+        pass
+        #print(f"[-] Error connecting to {host}:{port}: {e}")
+
+def scan_all_ports(host, payload_file=None):
+    print("[*] Scanning ports...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1024) as executor:
+        futures = [executor.submit(scan_port, host, port, payload_file) for port in range(1, 65536)]
+        concurrent.futures.wait(futures)
+    print(f"[+] Scanning completed. Open ports: {open_ports}")
+
+def get_or_create_connection(host, port, payload_file=None):
     sock = connections.get(port)
     if sock:
         try:
@@ -73,18 +88,25 @@ def get_or_create_connection(host, port):
         sock = socket.create_connection((host, port), timeout=5)
         connections[port] = sock
         print(f"[+] Connected to {host}:{port}")
+        
+        # Send payload immediately after connection if provided
+        if payload_file:
+            send_payload(sock, payload_file)
+        
         return sock
     except Exception as e:
         print(f"[-] Error connecting to {host}:{port}: {e}")
         return None
 
-def interact_with_port(host, port):
-    sock = get_or_create_connection(host, port)
+
+def interact_with_port(host, port, payload_file=None):
+    sock = get_or_create_connection(host, port, payload_file)
     if sock is None:
         print(f"[-] Unable to connect to {host}:{port}.")
         return
 
     print(f"[+] Connected to {host}:{port}. Type commands, 'load_payload' or 'exit'.\n")
+    
     try:
         while True:
             cmd = input(f"{host}:{port}> ")
@@ -114,64 +136,85 @@ def interact_with_port(host, port):
         print("\n[!] Exiting session.")
         return
 
+def cidr_to_ips(cidr):
+    try:
+        network = ipaddress.IPv4Network(cidr)
+        return [str(ip) for ip in network.hosts()]
+    except ValueError as e:
+        print(f"[-] Invalid CIDR block: {e}")
+        return []
 
 def main():
-    if len(sys.argv) < 2:
-        print(f"Usage: python {sys.argv[0]} <target_host> [ports]")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Port scanner and payload sender")
+    
+    # Positional argument for the target (host or CIDR block)
+    parser.add_argument("target", help="Target host or CIDR block (e.g., 192.168.1.1 or 192.168.1.0/24)")
 
-    target_host = sys.argv[1]
-    specified_ports = [int(port) for port in sys.argv[2:]] if len(sys.argv) > 2 else []
+    # Optional argument for specifying ports (as a list of integers)
+    parser.add_argument("ports", nargs="*", type=int, help="Ports to scan (e.g., 80 443 8080)")
 
-    if not specified_ports:
-        scan_all_ports(target_host)
-        if not open_ports:
-            print("[-] No open ports found.")
-            return
+    # Optional argument for the payload file
+    parser.add_argument("--payload", type=str, help="Path to the payload file to send on connection")
+
+    args = parser.parse_args()
+
+    # Handle CIDR block
+    if '/' in args.target:
+        target_hosts = cidr_to_ips(args.target)
     else:
-        open_ports.extend(specified_ports)
+        target_hosts = [args.target]
 
-    while True:
-        print("\nSelect a port to interact with:")
-        for idx, port in enumerate(open_ports):
-            print(f"{idx}: Port {port}")
-            
-        print("Type 'port <number>' to manually connect to a port.")
-        print("Type 'exit' to quit.")
-        choice = input("> ")
+    # Scan ports for each host
+    for target_host in target_hosts:
+        if not args.ports:
+            scan_all_ports(target_host, args.payload)
+            if not open_ports:
+                print("[-] No open ports found.")
+                continue
+        else:
+            open_ports.extend(args.ports)
 
-        if choice.lower() in ('exit', 'quit'):
-            break
+        while True:
+            print(f"\nSelect a port to interact with for {target_host}:")
+            for idx, port in enumerate(open_ports):
+                print(f"{idx}: Port {port}")
 
-        if choice.lower().startswith('port '):
-            try:
-                _, port_str = choice.split(maxsplit=1)
-                port = int(port_str)
+            print("Type 'port <number>' to manually connect to a port.")
+            print("Type 'exit' to quit.")
+            choice = input("> ")
 
-                if port in BLOCKLISTED_PORTS:
-                    print(f"[-] Port {port} is blocklisted.")
-                    continue
+            if choice.lower() in ('exit', 'quit'):
+                break
 
-                if port not in open_ports:
-                    sock = get_or_create_connection(target_host, port)
-                    if sock:
-                        open_ports.append(port)
+            if choice.lower().startswith('port '):
+                try:
+                    _, port_str = choice.split(maxsplit=1)
+                    port = int(port_str)
+
+                    if port in BLOCKLISTED_PORTS:
+                        print(f"[-] Port {port} is blocklisted.")
+                        continue
+
+                    if port not in open_ports:
+                        sock = get_or_create_connection(target_host, port, args.payload)
+                        if sock:
+                            open_ports.append(port)
+                        else:
+                            print(f"[-] Failed to connect to port {port}.")
                     else:
-                        print(f"[-] Failed to connect to port {port}.")
-                else:
-                    print(f"[i] Port {port} already in the list.")
-            except ValueError:
-                print("[-] Usage: port <number>")
-            continue
+                        print(f"[i] Port {port} already in the list.")
+                except ValueError:
+                    print("[-] Usage: port <number>")
+                continue
 
-        try:
-            idx = int(choice)
-            if 0 <= idx < len(open_ports):
-                interact_with_port(target_host, open_ports[idx])
-            else:
-                print("[-] Invalid index.")
-        except ValueError:
-            print("[-] Please enter a valid number or command.")
+            try:
+                idx = int(choice)
+                if 0 <= idx < len(open_ports):
+                    interact_with_port(target_host, open_ports[idx], args.payload)
+                else:
+                    print("[-] Invalid index.")
+            except ValueError:
+                print("[-] Please enter a valid number or command.")
 
 if __name__ == "__main__":
     main()
