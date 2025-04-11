@@ -5,11 +5,9 @@ import os
 import concurrent.futures
 import yaml
 
-BLOCKLISTED_PORTS = set()
 open_ports = []
 connections = {}
 lock = threading.Lock()
-
 
 def load_blocklisted_ports(yaml_path="blocklist.yaml"):
     try:
@@ -20,27 +18,26 @@ def load_blocklisted_ports(yaml_path="blocklist.yaml"):
         print(f"[!] Failed to load blocklist: {e}")
         return set()
 
+BLOCKLISTED_PORTS = load_blocklisted_ports()
 
 def scan_port(host, port):
     if port in BLOCKLISTED_PORTS:
         return
     try:
-        with socket.create_connection((host, port), timeout=1):
-            with lock:
-                open_ports.append(port)
-                connections[port] = True
-                print(f"[+] Open port: {port}")
-    except (socket.timeout, socket.error):
+        sock = socket.create_connection((host, port), timeout=1)
+        with lock:
+            open_ports.append(port)
+            connections[port] = sock
+            print(f"[+] Open port: {port}")
+    except:
         pass
-
 
 def scan_all_ports(host):
     print("[*] Scanning ports...")
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1024) as executor:
         futures = [executor.submit(scan_port, host, port) for port in range(1, 65536)]
         concurrent.futures.wait(futures)
     print(f"[+] Scanning completed. Open ports: {open_ports}")
-
 
 def load_payload(file_path):
     if not os.path.exists(file_path):
@@ -48,7 +45,6 @@ def load_payload(file_path):
         return None
     with open(file_path, 'rb') as f:
         return f.read()
-
 
 def send_payload(sock, file_path):
     payload = load_payload(file_path)
@@ -60,37 +56,29 @@ def send_payload(sock, file_path):
     except Exception as e:
         print(f"[-] Error sending payload: {e}")
 
-
 def get_or_create_connection(host, port):
     sock = connections.get(port)
     if sock:
         try:
-            sock.send(b'')
+            sock.send(b'')  # Ping the connection to check if it’s still alive
             return sock
-        except (socket.error, BrokenPipeError):
+        except:
             print(f"[!] Reconnecting to {host}:{port} (previous connection dropped)")
-            close_connection(port)
+            try:
+                sock.close()  # Close the invalid connection
+            except:
+                pass
+            del connections[port]
 
-    return create_new_connection(host, port)
-
-
-def create_new_connection(host, port):
+    # Establish new connection if not found or if the previous one failed
     try:
         sock = socket.create_connection((host, port), timeout=5)
         connections[port] = sock
         print(f"[+] Connected to {host}:{port}")
         return sock
-    except (socket.error, ConnectionRefusedError) as e:
+    except Exception as e:
         print(f"[-] Error connecting to {host}:{port}: {e}")
         return None
-
-
-def close_connection(port):
-    sock = connections.pop(port, None)
-    if sock:
-        sock.close()
-        print(f"[+] Connection to port {port} closed.")
-
 
 def interact_with_port(host, port):
     sock = get_or_create_connection(host, port)
@@ -121,10 +109,12 @@ def interact_with_port(host, port):
                     print("[-] No response.")
                 except (ConnectionResetError, BrokenPipeError):
                     print(f"[!] Connection to {host}:{port} was closed.")
-                    close_connection(port)
+                    if port in connections:
+                        del connections[port]
                     return
     except (KeyboardInterrupt, EOFError):
         print("\n[!] Exiting session.")
+        return
 
 
 def main():
@@ -134,9 +124,6 @@ def main():
 
     target_host = sys.argv[1]
     specified_ports = [int(port) for port in sys.argv[2:]] if len(sys.argv) > 2 else []
-
-    global BLOCKLISTED_PORTS
-    BLOCKLISTED_PORTS = load_blocklisted_ports()
 
     if not specified_ports:
         scan_all_ports(target_host)
@@ -150,7 +137,7 @@ def main():
         print("\nSelect a port to interact with:")
         for idx, port in enumerate(open_ports):
             print(f"{idx}: Port {port}")
-
+            
         print("Type 'port <number>' to manually connect to a port.")
         print("Type 'exit' to quit.")
         choice = input("> ")
@@ -187,7 +174,6 @@ def main():
                 print("[-] Invalid index.")
         except ValueError:
             print("[-] Please enter a valid number or command.")
-
 
 if __name__ == "__main__":
     main()
