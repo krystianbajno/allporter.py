@@ -1,7 +1,7 @@
 import socket
 import threading
-import selectors
 import sys
+import os
 
 BLACKLISTED_PORTS = {
     # Microsoft RPC/SMB/NetBIOS
@@ -34,6 +34,7 @@ BLACKLISTED_PORTS = {
 }
 
 open_ports = []
+connections = {}
 lock = threading.Lock()
 
 def scan_port(host, port):
@@ -58,34 +59,70 @@ def scan_all_ports(host):
         t.join()
     print(f"[+] Scanning completed. Open ports: {open_ports}")
 
-def interact_with_port(host, port):
+def load_payload(file_path):
+    if not os.path.exists(file_path):
+        print(f"[-] File {file_path} not found.")
+        return None
+    with open(file_path, 'rb') as f:
+        return f.read()
+
+def send_payload(sock, file_path):
+    payload = load_payload(file_path)
+    if payload is None:
+        return
+    try:
+        sock.sendall(payload)
+        print(f"[+] Payload sent from {file_path}")
+    except Exception as e:
+        print(f"[-] Error sending payload: {e}")
+
+def get_or_create_connection(host, port):
+    if port in connections and connections[port].connected:
+        return connections[port]
     try:
         sock = socket.create_connection((host, port), timeout=5)
-        print(f"[+] Connected to {host}:{port}. Type commands or 'exit'.\n")
-        while True:
-            cmd = input(f"{host}:{port}> ")
-            if cmd.lower() in ('exit', 'quit'):
-                break
+        connections[port] = sock
+        print(f"[+] Connected to {host}:{port}")
+        return sock
+    except Exception as e:
+        print(f"[-] Error connecting to {host}:{port}: {e}")
+        return None
+
+def interact_with_port(host, port):
+    sock = get_or_create_connection(host, port)
+    if sock is None:
+        return
+    print(f"[+] Connected to {host}:{port}. Type commands or 'exit'.\n")
+    while True:
+        cmd = input(f"{host}:{port}> ")
+        if cmd.lower() in ('exit', 'quit'):
+            break
+        elif cmd.lower().startswith('load_payload'):
+            _, file_path = cmd.split(maxsplit=1)
+            send_payload(sock, file_path)
+        else:
             sock.sendall(cmd.encode() + b'\n')
             try:
                 response = sock.recv(4096)
                 print(response.decode(errors='ignore'))
             except socket.timeout:
                 print("[-] No response.")
-        sock.close()
-    except Exception as e:
-        print(f"[-] Error connecting to port {port}: {e}")
 
 def main():
-    if len(sys.argv) != 2:
-        print(f"Usage: python {sys.argv[0]} <target_host>")
+    if len(sys.argv) < 2:
+        print(f"Usage: python {sys.argv[0]} <target_host> [ports]")
         sys.exit(1)
-    target_host = sys.argv[1]
-    scan_all_ports(target_host)
 
-    if not open_ports:
-        print("[-] No open ports found.")
-        return
+    target_host = sys.argv[1]
+    specified_ports = [int(port) for port in sys.argv[2:]] if len(sys.argv) > 2 else []
+
+    if not specified_ports:
+        scan_all_ports(target_host)
+        if not open_ports:
+            print("[-] No open ports found.")
+            return
+    else:
+        open_ports.extend(specified_ports)
 
     while True:
         print("\nSelect a port to interact with (or type 'exit'):")
