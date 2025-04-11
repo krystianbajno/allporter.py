@@ -5,59 +5,37 @@ import os
 import concurrent.futures
 import yaml
 
-BLOCKLISTED_TCP_PORTS = set()
-BLOCKLISTED_UDP_PORTS = set()
 open_ports = []
 connections = {}
 lock = threading.Lock()
-command_history = []
-history_index = -1 
 
-def load_blocklisted_ports(yaml_path):
-    global BLOCKLISTED_TCP_PORTS, BLOCKLISTED_UDP_PORTS
+def load_blocklisted_ports(yaml_path="blocklist.yaml"):
     try:
         with open(yaml_path, 'r') as f:
             data = yaml.safe_load(f)
-            BLOCKLISTED_TCP_PORTS = set(data.get("blocklisted_ports", {}).get("tcp", []))
-            BLOCKLISTED_UDP_PORTS = set(data.get("blocklisted_ports", {}).get("udp", []))
+            return set(data.get("blocklisted_ports", []))
     except Exception as e:
-        print(f"[!] Failed to load blocklist from {yaml_path}: {e}")
+        print(f"[!] Failed to load blocklist: {e}")
+        return set()
 
-def scan_tcp_port(host, port):
-    if port in BLOCKLISTED_TCP_PORTS:
+BLOCKLISTED_PORTS = load_blocklisted_ports()
+
+def scan_port(host, port):
+    if port in BLOCKLISTED_PORTS:
         return
     try:
-        with socket.create_connection((host, port), timeout=1):
-            with lock:
-                open_ports.append(port)
-                connections[port] = True
-                print(f"[+] Open TCP port: {port}")
-    except (socket.timeout, socket.error):
-        pass
-
-def scan_udp_port(host, port):
-    if port in BLOCKLISTED_UDP_PORTS:
-        return
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(1)
-        sock.sendto(b'', (host, port))
-        sock.recvfrom(1024)
+        sock = socket.create_connection((host, port), timeout=1)
         with lock:
             open_ports.append(port)
-            connections[port] = True
-            print(f"[+] Open UDP port: {port}")
-    except (socket.timeout, socket.error):
+            connections[port] = sock
+            print(f"[+] Open port: {port}")
+    except:
         pass
 
-def scan_all_ports(host, scan_tcp=True, scan_udp=False):
+def scan_all_ports(host):
     print("[*] Scanning ports...")
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        futures = []
-        if scan_tcp:
-            futures.extend(executor.submit(scan_tcp_port, host, port) for port in range(1, 65536))
-        if scan_udp:
-            futures.extend(executor.submit(scan_udp_port, host, port) for port in range(1, 65536))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1024) as executor:
+        futures = [executor.submit(scan_port, host, port) for port in range(1, 65536)]
         concurrent.futures.wait(futures)
     print(f"[+] Scanning completed. Open ports: {open_ports}")
 
@@ -78,70 +56,32 @@ def send_payload(sock, file_path):
     except Exception as e:
         print(f"[-] Error sending payload: {e}")
 
-def get_or_create_connection(host, port, is_udp=False):
+def get_or_create_connection(host, port):
     sock = connections.get(port)
     if sock:
         try:
-            if is_udp:
-                sock.sendto(b'', (host, port))
-            else:
-                sock.send(b'')
+            sock.send(b'')  # Ping the connection to check if it’s still alive
             return sock
-        except (socket.error, BrokenPipeError):
+        except:
             print(f"[!] Reconnecting to {host}:{port} (previous connection dropped)")
-            close_connection(port)
+            try:
+                sock.close()  # Close the invalid connection
+            except:
+                pass
+            del connections[port]
 
-    return create_new_connection(host, port, is_udp)
-
-def create_new_connection(host, port, is_udp=False):
+    # Establish new connection if not found or if the previous one failed
     try:
-        if is_udp:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(5)
-            sock.sendto(b'', (host, port))
-        else:
-            sock = socket.create_connection((host, port), timeout=5)
+        sock = socket.create_connection((host, port), timeout=5)
         connections[port] = sock
         print(f"[+] Connected to {host}:{port}")
         return sock
-    except (socket.error, ConnectionRefusedError) as e:
+    except Exception as e:
         print(f"[-] Error connecting to {host}:{port}: {e}")
         return None
 
-def close_connection(port):
-    sock = connections.pop(port, None)
-    if sock:
-        sock.close()
-        print(f"[+] Connection to port {port} closed.")
-
-def input_with_history(prompt):
-    global history_index
-    while True:
-        user_input = input(prompt)
-
-        if user_input == "":
-            history_index = len(command_history)
-            continue
-
-        if user_input == "UP":
-            if history_index > 0:
-                history_index -= 1
-                return command_history[history_index]
-            else:
-                return ""
-        elif user_input == "DOWN":
-            if history_index < len(command_history) - 1:
-                history_index += 1
-                return command_history[history_index]
-            else:
-                return ""
-        else:
-            command_history.append(user_input)
-            history_index = len(command_history)
-            return user_input
-
-def interact_with_port(host, port, is_udp=False):
-    sock = get_or_create_connection(host, port, is_udp)
+def interact_with_port(host, port):
+    sock = get_or_create_connection(host, port)
     if sock is None:
         print(f"[-] Unable to connect to {host}:{port}.")
         return
@@ -149,7 +89,7 @@ def interact_with_port(host, port, is_udp=False):
     print(f"[+] Connected to {host}:{port}. Type commands, 'load_payload' or 'exit'.\n")
     try:
         while True:
-            cmd = input_with_history(f"$ [{host}:{port}] > ")
+            cmd = input(f"{host}:{port}> ")
             if cmd.lower() in ('exit', 'quit'):
                 return
             elif cmd.lower().startswith('load_payload'):
@@ -160,10 +100,7 @@ def interact_with_port(host, port, is_udp=False):
                     print("[-] Usage: load_payload <file>")
             else:
                 try:
-                    if is_udp:
-                        sock.sendto(cmd.encode() + b'\n', (host, port))
-                    else:
-                        sock.sendall(cmd.encode() + b'\n')
+                    sock.sendall(cmd.encode() + b'\n')
                     response = sock.recv(4096)
                     if not response:
                         raise ConnectionResetError
@@ -172,31 +109,24 @@ def interact_with_port(host, port, is_udp=False):
                     print("[-] No response.")
                 except (ConnectionResetError, BrokenPipeError):
                     print(f"[!] Connection to {host}:{port} was closed.")
-                    close_connection(port)
+                    if port in connections:
+                        del connections[port]
                     return
     except (KeyboardInterrupt, EOFError):
         print("\n[!] Exiting session.")
+        return
+
 
 def main():
     if len(sys.argv) < 2:
-        print(f"Usage: python {sys.argv[0]} <target_host> [-u] [-t] [ports]")
+        print(f"Usage: python {sys.argv[0]} <target_host> [ports]")
         sys.exit(1)
 
     target_host = sys.argv[1]
-    scan_tcp = True
-    scan_udp = False
-
-    if '-u' in sys.argv:
-        scan_udp = True
-        if '-t' not in sys.argv:
-            scan_tcp = False
-
-    specified_ports = [int(port) for port in sys.argv[3:]] if len(sys.argv) > 3 else []
-
-    load_blocklisted_ports("blocklist.yaml")
+    specified_ports = [int(port) for port in sys.argv[2:]] if len(sys.argv) > 2 else []
 
     if not specified_ports:
-        scan_all_ports(target_host, scan_tcp, scan_udp)
+        scan_all_ports(target_host)
         if not open_ports:
             print("[-] No open ports found.")
             return
@@ -207,7 +137,7 @@ def main():
         print("\nSelect a port to interact with:")
         for idx, port in enumerate(open_ports):
             print(f"{idx}: Port {port}")
-
+            
         print("Type 'port <number>' to manually connect to a port.")
         print("Type 'exit' to quit.")
         choice = input("> ")
@@ -220,12 +150,12 @@ def main():
                 _, port_str = choice.split(maxsplit=1)
                 port = int(port_str)
 
-                if port in BLOCKLISTED_TCP_PORTS or port in BLOCKLISTED_UDP_PORTS:
+                if port in BLOCKLISTED_PORTS:
                     print(f"[-] Port {port} is blacklisted.")
                     continue
 
                 if port not in open_ports:
-                    sock = get_or_create_connection(target_host, port, is_udp=scan_udp)
+                    sock = get_or_create_connection(target_host, port)
                     if sock:
                         open_ports.append(port)
                     else:
@@ -239,8 +169,7 @@ def main():
         try:
             idx = int(choice)
             if 0 <= idx < len(open_ports):
-                is_udp = any(port == open_ports[idx] for port in open_ports)
-                interact_with_port(target_host, open_ports[idx], is_udp)
+                interact_with_port(target_host, open_ports[idx])
             else:
                 print("[-] Invalid index.")
         except ValueError:

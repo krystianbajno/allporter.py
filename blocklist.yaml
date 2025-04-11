@@ -1,6 +1,5 @@
 # List of ports to skip during scanning or interaction
 blocklisted_ports:
-  tcp:
     # Microsoft RPC/SMB/NetBIOS
     - 135
     - 137
@@ -35,7 +34,3 @@ blocklisted_ports:
     # Web servers
     - 80     # HTTP
     - 443    # HTTPS
-
-  udp:
-    - 53
-    - 161
